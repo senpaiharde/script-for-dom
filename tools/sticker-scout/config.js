@@ -10,7 +10,7 @@ module.exports = {
     minPrice: 0.5, // number | null
     maxPrice: 59, // number | null
     stickerMode: 'any', // 'any' | 'all' | 'regex'
-    stickerTerms: [], // used for 'any' or 'all'
+    stickerTerms: ['Holo'], // used for 'any' or 'all'
     stickerRegex: null, // e.g. '(Holo|Foil)' (case-insensitive)
     minStickerCount: 1,
   },
@@ -74,9 +74,11 @@ module.exports = {
     appId: 730,
     sort: 'price-desc', // or 'price-asc'
     limit: 60, // as observed
-    maxPages: 180, // safety cap
+    maxPages: 20, // safety cap
     useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
     priceFactor: 100, // API uses cents: 5900 => $59.00
+    forceBrowserSession: true, // <— NEW: always fetch via the page session
+    useBrowserSessionOnFail: true, // fine to keep
     tradeLock: 7,
     headers: {
       'user-agent':
@@ -85,14 +87,18 @@ module.exports = {
     },
     startOffset: 0, // where to begin (offset is multiples of limit)
   },
-
+  BROWSER: {
+    headless: false, // so you see it open / set cookies
+    viewport: { width: 1440, height: 900 },
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  },
   POLITENESS: {
     minDelayMs: 800, // base delay between requests
     maxDelayMs: 1500, // randomize between min..max
     jitterMs: 300, // extra tiny jitter
     requestsPerMinute: 20, // soft cap; tool paces itself
     maxPagesPerRun: 40, // hard cap for a single run
-    stopOnHttp: [401, 402, 403, 429], // halt immediately on these
+    stopOnHttp: [401, 403, 429], // halt immediately on these
     backoffMs: 4000, // brief backoff for 429 before one retry
     maxConsecutiveErrors: 1, // trip the breaker if errors repeat
     dryRun: false, // true → print URLs only, don’t fetch
