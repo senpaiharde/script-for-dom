@@ -8,11 +8,11 @@ module.exports = {
   // Filters you want by default (no CLI – just edit here)
   FILTERS: {
     minPrice: 0.5, // number | null
-    maxPrice: 49, // number | null
+    maxPrice: 6, // number | null
     stickerMode: 'any', // 'any' | 'all' | 'regex'
     stickerTerms: [], // used for 'any' or 'all'
     stickerRegex: null, // e.g. '(Holo|Foil)' (case-insensitive)
-    minStickerCount: 0,
+    minStickerCount: 1,
   },
 
   // Profit model – tune or disable
@@ -38,7 +38,7 @@ module.exports = {
     streamHits: true, // print HIT lines immediately
     saveJSON: true,
     saveCSV: true,
-    sortBy: 'roi', // 'roi' | 'price' | 'none'
+    sortBy: 'sticker_price', // 'sticker_count' | 'sticker_price' | 'roi' | 'absolute'
     debugFirstN: 10,
   },
   FAST: {

@@ -70,7 +70,11 @@ function buildUrl({ baseUrl, appId, sort, limit, offset, minCents, maxCents, tra
   u.searchParams.set('offset', String(offset));
   if (minCents != null) u.searchParams.set('priceMin', String(minCents));
   if (maxCents != null) u.searchParams.set('priceMax', String(maxCents));
-  if (tradeLock != null) u.searchParams.set('tradeLock', String(tradeLock));
+  if (FETCH.tradeLock !== null && FETCH.tradeLock !== undefined && FETCH.tradeLock !== '') {
+    u.searchParams.set('tradeLock', String(FETCH.tradeLock));
+  } else {
+    u.searchParams.delete('tradeLock');
+  }
   return u.toString();
 }
 async function nodeFetchJson(url) {
@@ -265,6 +269,25 @@ async function main() {
       name: normalizeSpaces(it.name),
       stickers: Array.isArray(it.stickers) ? it.stickers : [],
     };
+    const names = item.stickers.map((s) => (s?.name || '').toString()).filter(Boolean);
+    const hasMin = (FILTERS.minStickerCount ?? 0) <= names.length;
+    let termsOk = true;
+    if (FILTERS.stickerMode === 'regex' && FILTERS.stickerRegex) {
+      try {
+        const rx = new RegExp(FILTERS.stickerRegex, 'i');
+        termsOk = names.some((n) => rx.test(n));
+      } catch {
+        termsOk = true; // invalid regex → do not block
+      }
+    } else if (Array.isArray(FILTERS.stickerTerms) && FILTERS.stickerTerms.length) {
+      termsOk = require('./utils').stickerMatch(names, {
+        mode: FILTERS.stickerMode,
+        terms: FILTERS.stickerTerms,
+        regex: null,
+        minCount: 0,
+      });
+    }
+    if (!hasMin || !termsOk) return;
     hits.push(item);
     if (OUTPUT.streamHits) console.log(JSON.stringify({ type: 'ITEM', data: item }));
   };
@@ -407,7 +430,10 @@ async function main() {
     }
     if (arr.length < FETCH.limit) break;
   }
-
+  const maxSticker = (it) => Math.max(0, ...(it.stickers || []).map((s) => Number(s?.price) || 0));
+  if ((CFG.OUTPUT?.sortBy || 'sticker_price') === 'sticker_price') {
+    hits.sort((a, b) => maxSticker(b) - maxSticker(a));
+  }
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const jsonPath = path.join(outDir, `skinsmonkey-fetch-${ts}.json`);
   const csvPath = path.join(outDir, `skinsmonkey-fetch-${ts}.csv`);
