@@ -133,7 +133,7 @@ function mapItem(o) {
     o.meta?.stickers;
   if (Array.isArray(cand)) {
     stickers = cand
-      .map((s) => (s && (s.name || s.title || s.text || s.stickerName)) || '')
+      .map((s) => (s && (s.marketName || s.name || s.title || s.text || s.stickerName)) || '')
       .filter(Boolean);
   }
   return { name, price, stickers };
@@ -149,13 +149,22 @@ async function pageSessionFetch(browser, url) {
       waitUntil: ['domcontentloaded', 'networkidle2'],
     });
   }
-  return await page.evaluate(async (u) => {
-    const r = await fetch(u, { credentials: 'include' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const ct = r.headers.get('content-type') || '';
-    if (ct.includes('application/json')) return await r.json();
-    return await r.json();
-  }, url);
+  const headers = CFG.FETCH?.headers || {};
+  return await page.evaluate(
+    async (u, hdrs) => {
+      const r = await fetch(u, {
+        credentials: 'include',
+        mode: 'cors',
+        headers: hdrs,
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const ct = r.headers.get('content-type') || '';
+      if (ct.includes('application/json')) return await r.json();
+      return await r.json();
+    },
+    url,
+    headers
+  );
 }
 
 // ---------- main ----------
@@ -308,31 +317,28 @@ async function main() {
     log(`page ${p + 1}: got ${arr.length} containers (offset=${offset})`);
     if (!arr.length) break;
 
-  
     if (Array.isArray(json.assets)) {
       for (const asset of json.assets) {
         const stickers = Array.isArray(asset.stickers) ? asset.stickers : [];
         for (const s of stickers) {
-         
           const sName = s.marketName || s.name || s.title || s.text || 'Sticker (unknown)';
-         
+
           const sPrice =
             typeof s.price === 'number' ? s.price / (CFG.FETCH?.priceFactor ?? 100) : null;
           const row = {
             name: sName,
             price: sPrice,
-          
+
             stickers: [sName],
           };
           if (row.name && row.price != null) emit(row);
         }
       }
-     
+
       if (arr.length < FETCH.limit) break;
       continue;
     }
 
-    
     for (const raw of arr) {
       const m = mapItem(raw);
       if (m && m.name) emit(m);

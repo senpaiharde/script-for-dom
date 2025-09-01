@@ -74,7 +74,7 @@ module.exports = {
     appId: 730,
     sort: 'price-desc', // or 'price-asc'
     limit: 60, // as observed
-    maxPages: 20, // safety cap
+    maxPages: 10, // safety cap
     useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
     priceFactor: 100, // API uses cents: 5900 => $59.00
     forceBrowserSession: true, // <— NEW: always fetch via the page session
@@ -84,6 +84,9 @@ module.exports = {
       'user-agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
       accept: 'application/json,text/plain,*/*',
+      referer: 'https://skinsmonkey.com/trade',
+      origin: 'https://skinsmonkey.com',
+      'x-csrf-token': '', // <-- from your capture
     },
     startOffset: 0, // where to begin (offset is multiples of limit)
   },
