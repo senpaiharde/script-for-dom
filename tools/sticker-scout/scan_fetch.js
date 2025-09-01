@@ -12,31 +12,68 @@ try {
   } catch {}
 }
 
+// tools/sticker-scout/scan_fetch.js
 const CFG = require('./config');
 const { normalizeSpaces, stickerMatch, priceMatch, estimateProfit } = require('./utils');
 
 const log = (...a) => console.log('[sticker-scout:fetch]', ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const fetchWithTimeout = async (url, ms = 15000, opts = {}) => {
-  const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal, ...opts });
-    return res;
-  } finally {
-    clearTimeout(id);
+
+// ---- Politeness helpers ----
+function randInt(min, max) {
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+class Pace {
+  constructor(cfg) {
+    this.cfg = cfg;
+    this.last = 0;
+    this.window = [];
   }
-};
+  async wait() {
+    const { minDelayMs, maxDelayMs, jitterMs, requestsPerMinute } = this.cfg;
+    // basic delay
+    const now = Date.now();
+    const base = randInt(minDelayMs, maxDelayMs) + randInt(0, jitterMs);
+    const since = now - this.last;
+    if (since < base) await sleep(base - since);
+    this.last = Date.now();
+
+    // RPM windowing
+    if (requestsPerMinute && requestsPerMinute > 0) {
+      const cutoff = Date.now() - 60_000;
+      this.window = this.window.filter((t) => t >= cutoff);
+      if (this.window.length >= requestsPerMinute) {
+        const earliest = this.window[0];
+        const waitFor = 60_000 - (Date.now() - earliest) + 25;
+        await sleep(waitFor);
+      }
+      this.window.push(Date.now());
+    }
+  }
+}
 
 function toCents(x) {
+  const factor = CFG.FETCH?.priceFactor ?? 100;
   if (x == null) return null;
   const n = Number(x);
-  if (!Number.isFinite(n)) return null;
-  return Math.round(n * 100);
+  return Number.isFinite(n) ? Math.round(n * factor) : null;
+}
+
+function normalizeBaseUrl(str) {
+  if (!str) return null;
+  const t = String(str).trim();
+  if (!t) return null;
+  if (/^https?:\/\//i.test(t)) return t;
+  if (t.startsWith('//')) return 'https:' + t;
+  if (t.startsWith('/')) return 'https://skinsmonkey.com' + t;
+  if (/^skinsmonkey\.com/i.test(t)) return 'https://' + t;
+  return 'https://' + t;
 }
 
 function buildUrl({ baseUrl, appId, sort, limit, offset, minCents, maxCents, tradeLock }) {
-  const u = new URL(baseUrl);
+  const base = normalizeBaseUrl(baseUrl);
+  const u = new URL(base);
   u.searchParams.set('appId', String(appId));
   u.searchParams.set('sort', sort);
   u.searchParams.set('limit', String(limit));
@@ -47,67 +84,16 @@ function buildUrl({ baseUrl, appId, sort, limit, offset, minCents, maxCents, tra
   return u.toString();
 }
 
-// Map unknown API item → {name, price (USD), stickers[]}
-function mapItem(o) {
-  if (!o || typeof o !== 'object') return null;
-
-  const name =
-    o.name || o.market_hash_name || o.marketName || o.title || o.fullName || o.asset?.name || '';
-
-  // price may be cents (int) or dollars (float). Prefer cents-like fields.
-  let cents =
-    (typeof o.price_cents === 'number' && o.price_cents) ||
-    (typeof o.priceCents === 'number' && o.priceCents) ||
-    (typeof o.price === 'number' && o.price > 100 ? o.price : null) ||
-    (typeof o.list_price === 'number' && o.list_price > 100 ? o.list_price : null) ||
-    (typeof o.sell_price === 'number' && o.sell_price > 100 ? o.sell_price : null);
-
-  // fallback: price is already dollars
-  let price =
-    (cents != null ? cents / 100 : null) ?? (typeof o.price === 'number' ? o.price : null);
-
-  // stickers likely as array of objects with name/title
-  let stickers = [];
-  const candArrs = [
-    o.stickers,
-    o.appliedStickers,
-    o.applied_stickers,
-    o.attributes?.applied_stickers,
-    o.asset?.stickers,
-    o.details?.stickers,
-    o.meta?.stickers,
-  ].filter(Boolean);
-
-  if (candArrs.length) {
-    stickers = (candArrs[0] || [])
-      .map((s) => (s && (s.name || s.title || s.text || s.stickerName)) || '')
-      .filter(Boolean);
-  }
-
-  return { name, price, stickers };
-}
-
-// Find where the items array lives in the response
-function extractItemsArray(json) {
-  if (!json) return [];
-  if (Array.isArray(json)) return json;
-  if (Array.isArray(json.items)) return json.items;
-  if (Array.isArray(json.data)) return json.data;
-  if (json.data && Array.isArray(json.data.items)) return json.data.items;
-  if (Array.isArray(json.results)) return json.results;
-  if (Array.isArray(json.inventory)) return json.inventory;
-  return [];
-}
-
-// Node fetch with headers. If 403 and configured, caller may retry via pageSessionFetch.
 async function nodeFetchJson(url) {
+  log('GET', url);
   const res = await fetch(url, {
     headers: {
       Accept: 'application/json, text/plain, */*',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) StickerScout/1.0',
+      'User-Agent': 'StickerScout/1.0 (+Homework)',
       Referer: 'https://skinsmonkey.com/trade',
       Origin: 'https://skinsmonkey.com',
       'Accept-Language': 'en-US,en;q=0.9',
+      ...(CFG.FETCH?.headers || {}),
     },
   });
   if (!res.ok) {
@@ -120,56 +106,72 @@ async function nodeFetchJson(url) {
   return res.json();
 }
 
-// Use the page’s session (bypasses CF/CORS). Requires puppeteer.
-async function pageSessionFetch(browser, url) {
-  if (!puppeteer || !browser) throw new Error('No browser available for session fetch');
-  const pages = await browser.pages();
-  const page = pages[0] || (await browser.newPage());
-  console.log('[sticker-scout:fetch] opening trade page for session…');
-  await page
-    .goto('https://skinsmonkey.com/trade', { waitUntil: ['domcontentloaded', 'networkidle2'] })
-    .catch(() => {});
-  return await page.evaluate(async (u) => {
-    const r = await fetch(u, { credentials: 'include' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return await r.json();
-  }, url);
+function extractItemsArray(json) {
+  if (!json) return [];
+  if (Array.isArray(json)) return json;
+  if (Array.isArray(json.items)) return json.items;
+  if (Array.isArray(json.data)) return json.data;
+  if (json.data && Array.isArray(json.data.items)) return json.data.items;
+  if (Array.isArray(json.results)) return json.results;
+  if (Array.isArray(json.inventory)) return json.inventory;
+  return [];
+}
+
+function mapItem(o) {
+  if (!o || typeof o !== 'object') return null;
+  const name =
+    o.name || o.market_hash_name || o.marketName || o.title || o.fullName || o.asset?.name || '';
+  let cents =
+    (typeof o.price_cents === 'number' && o.price_cents) ||
+    (typeof o.priceCents === 'number' && o.priceCents) ||
+    (typeof o.price === 'number' && o.price > 100 ? o.price : null) ||
+    (typeof o.list_price === 'number' && o.list_price > 100 ? o.list_price : null) ||
+    (typeof o.sell_price === 'number' && o.sell_price > 100 ? o.sell_price : null);
+  const price =
+    cents != null
+      ? cents / (CFG.FETCH?.priceFactor ?? 100)
+      : typeof o.price === 'number'
+      ? o.price
+      : null;
+
+  let stickers = [];
+  const cand =
+    o.stickers ||
+    o.appliedStickers ||
+    o.applied_stickers ||
+    o.attributes?.applied_stickers ||
+    o.asset?.stickers ||
+    o.details?.stickers ||
+    o.meta?.stickers;
+  if (Array.isArray(cand)) {
+    stickers = cand
+      .map((s) => (s && (s.name || s.title || s.text || s.stickerName)) || '')
+      .filter(Boolean);
+  }
+  return { name, price, stickers };
 }
 
 async function main() {
-  const { FETCH, FILTERS, OUTPUT, PROFIT, BROWSER } = CFG;
+  const { FETCH, FILTERS, OUTPUT, PROFIT, POLITENESS } = CFG;
   if (!FETCH?.enabled) throw new Error('FETCH mode disabled in config');
 
-  // Prepare output
-  const outDir = path.resolve(process.cwd(), OUTPUT.dir || 'out');
-  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const jsonPath = path.join(outDir, `skinsmonkey-fetch-${ts}.json`);
-  const csvPath = path.join(outDir, `skinsmonkey-fetch-${ts}.csv`);
+  const outDir = require('path').resolve(process.cwd(), OUTPUT.dir || 'out');
+  require('fs').mkdirSync(outDir, { recursive: true });
 
-  // Server-side price filter (convert dollars→cents)
   const minCents = toCents(FILTERS.minPrice);
   const maxCents = toCents(FILTERS.maxPrice);
 
-  log('starting fetch scan', { limit: FETCH.limit, maxPages: FETCH.maxPages, minCents, maxCents });
-  {
-    const firstUrl = buildUrl({
-      baseUrl: FETCH.baseUrl,
-      appId: FETCH.appId,
-      sort: FETCH.sort,
-      limit: FETCH.limit,
-      offset: 0,
-      minCents,
-      maxCents,
-      tradeLock: FETCH.tradeLock,
-    });
-    log('first URL:', firstUrl);
-  }
-  let browser = null;
-  let usedBrowserSession = false;
+  log('starting fetch scan', {
+    limit: FETCH.limit,
+    maxPages: Math.min(FETCH.maxPages, POLITENESS.maxPagesPerRun),
+    minCents,
+    maxCents,
+  });
 
+  const pace = new Pace(POLITENESS);
   const seen = new Set();
   const hits = [];
+  let consecutiveErrors = 0;
 
   const emit = (it) => {
     const key = `${it.name}::${it.price}::${(it.stickers || []).join('|')}`;
@@ -200,90 +202,95 @@ async function main() {
     }
   };
 
-  try {
-    for (let p = 0; p < FETCH.maxPages; p++) {
-      const offset = p * FETCH.limit;
-      const url = buildUrl({
-        baseUrl: FETCH.baseUrl,
-        appId: FETCH.appId,
-        sort: FETCH.sort,
-        limit: FETCH.limit,
-        offset,
-        minCents,
-        maxCents,
-        tradeLock: FETCH.tradeLock,
-      });
+  const maxPages = Math.min(FETCH.maxPages, POLITENESS.maxPagesPerRun);
+  for (let p = 0; p < maxPages; p++) {
+    const offset = (FETCH.startOffset || 0) + p * FETCH.limit;
+    const url = buildUrl({
+      baseUrl: FETCH.baseUrl || FETCH.endpoint,
+      appId: FETCH.appId,
+      sort: FETCH.sort,
+      limit: FETCH.limit,
+      offset,
+      minCents,
+      maxCents,
+      tradeLock: FETCH.tradeLock,
+    });
 
-      let json;
-      try {
-        json = await nodeFetchJson(url);
-      } catch (e) {
-        log('fetch error:', e._status || e.name || '', (e.message || '').slice(0, 120));
-        if (e._body) log('body sample:', String(e._body).slice(0, 160));
-        // If blocked and configured, fall back to browser session fetch once
-        if (FETCH.useBrowserSessionOnFail && e._status === 403) {
-          if (!browser) {
-            if (!puppeteer)
-              throw new Error('Install puppeteer to enable browser-session fetch fallback');
-            browser = BROWSER?.connectWSEndpoint
-              ? await puppeteer.connect({ browserWSEndpoint: BROWSER.connectWSEndpoint })
-              : await puppeteer.launch({
-                  headless: BROWSER?.headless ?? true,
-                  defaultViewport: BROWSER?.viewport || { width: 1440, height: 900 },
-                  args: BROWSER?.args || ['--no-sandbox', '--disable-setuid-sandbox'],
-                  executablePath: BROWSER?.executablePath || undefined,
-                });
-            usedBrowserSession = true;
-            log('403 from API  switching to browser-session fetch (opening page to get cookies)…');
-          }
-          json = await pageSessionFetch(browser, url);
-        } else {
-          throw e;
+    if (POLITENESS.dryRun) {
+      log('DRY RUN URL:', url);
+      continue;
+    }
+
+    // Respect pacing BEFORE each request
+    await pace.wait();
+
+    let json;
+    try {
+      json = await nodeFetchJson(url);
+      consecutiveErrors = 0; // reset on success
+    } catch (e) {
+      log('fetch error:', e._status || e.name || '', (e.message || '').slice(0, 120));
+      if (e._body) log('body sample:', String(e._body).slice(0, 160));
+
+      // Stop on disallowed statuses
+      if (POLITENESS.stopOnHttp.includes(e._status)) {
+        log(`Stopping due to HTTP ${e._status}.`);
+        break;
+      }
+
+      // Backoff + one retry for 429/timeouts
+      if (e._status === 429 || e.name === 'AbortError') {
+        await sleep(POLITENESS.backoffMs);
+        try {
+          json = await nodeFetchJson(url);
+        } catch {
+          consecutiveErrors++;
+          if (consecutiveErrors > POLITENESS.maxConsecutiveErrors) throw e;
+          else continue;
         }
+      } else {
+        consecutiveErrors++;
+        if (consecutiveErrors > POLITENESS.maxConsecutiveErrors) throw e;
+        continue;
       }
-
-      const arr = extractItemsArray(json);
-      log(`page ${p + 1}: got ${arr.length} items (offset=${offset})`);
-      if (!arr.length) break;
-
-      for (const raw of arr) {
-        const m = mapItem(raw);
-        if (m && m.name) emit(m);
-      }
-
-      await sleep(100);
     }
 
-    // sorting and saving into my json data !
-    if ((OUTPUT.sortBy || 'roi') === 'roi') {
-      hits.sort((a, b) => (b.profit?.roi ?? -Infinity) - (a.profit?.roi ?? -Infinity));
-    } else if (OUTPUT.sortBy === 'price') {
-      hits.sort((a, b) => (a.price ?? Infinity) - (b.price ?? Infinity));
+    const arr = extractItemsArray(json);
+    log(`page ${p + 1}: got ${arr.length} items (offset=${offset})`);
+    if (!arr.length) break;
+
+    for (const raw of arr) {
+      const m = mapItem(raw);
+      if (m && m.name) emit(m);
     }
 
-    if (OUTPUT.saveJSON) fs.writeFileSync(jsonPath, JSON.stringify(hits, null, 2), 'utf8');
-    if (OUTPUT.saveCSV) {
-      const header = ['name', 'price', 'stickers', 'roi', 'absProfit'].join(',');
-      const rows = hits.map((x) =>
-        [
-          `"${x.name.replace(/"/g, '""')}"`,
-          x.price ?? '',
-          `"${(x.stickers || []).join(' | ').replace(/"/g, '""')}"`,
-          x.profit?.roi ?? '',
-          x.profit?.absolute ?? '',
-        ].join(',')
-      );
-      fs.writeFileSync(csvPath, [header, ...rows].join('\n'), 'utf8');
-    }
-
-    log(`Done. Hits: ${hits.length}`);
-    if (OUTPUT.saveJSON) log('Saved:', jsonPath);
-    if (OUTPUT.saveCSV) log('Saved:', csvPath);
-    if (usedBrowserSession && browser) await browser.close().catch(() => {});
-  } catch (err) {
-    if (browser) await browser.close().catch(() => {});
-    throw err;
+    // stop early when we hit the end (typical)
+    if (arr.length < FETCH.limit) break;
   }
+
+  // Save
+  hits.sort((a, b) => (b.profit?.roi ?? -Infinity) - (a.profit?.roi ?? -Infinity));
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const jsonPath = require('path').join(outDir, `skinsmonkey-fetch-${ts}.json`);
+  const csvPath = require('path').join(outDir, `skinsmonkey-fetch-${ts}.csv`);
+  require('fs').writeFileSync(jsonPath, JSON.stringify(hits, null, 2), 'utf8');
+  require('fs').writeFileSync(
+    csvPath,
+    [
+      'name,price,stickers,roi,absProfit',
+      ...hits.map(
+        (x) =>
+          `"${x.name.replace(/"/g, '""')}",${x.price ?? ''},"${(x.stickers || [])
+            .join(' | ')
+            .replace(/"/g, '""')}",${x.profit?.roi ?? ''},${x.profit?.absolute ?? ''}`
+      ),
+    ].join('\n'),
+    'utf8'
+  );
+
+  log(`Done. Hits: ${hits.length}`);
+  log('Saved:', jsonPath);
+  log('Saved:', csvPath);
 }
 
 module.exports = { main };

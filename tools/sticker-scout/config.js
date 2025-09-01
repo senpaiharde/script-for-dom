@@ -70,18 +70,31 @@ module.exports = {
   // FAST_FETCH: direct API scanner
   FETCH: {
     enabled: true,
-    endpoint: 'https://skinsmonkey.com/api/inventory',
+    baseUrl: 'https://skinsmonkey.com/api/inventory',
     appId: 730,
     sort: 'price-desc', // or 'price-asc'
     limit: 60, // as observed
     maxPages: 180, // safety cap
     useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
     priceFactor: 100, // API uses cents: 5900 => $59.00
-    tradeLock: 8,
+    tradeLock: 7,
     headers: {
       'user-agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
       accept: 'application/json,text/plain,*/*',
     },
+    startOffset: 0, // where to begin (offset is multiples of limit)
+  },
+
+  POLITENESS: {
+    minDelayMs: 800, // base delay between requests
+    maxDelayMs: 1500, // randomize between min..max
+    jitterMs: 300, // extra tiny jitter
+    requestsPerMinute: 20, // soft cap; tool paces itself
+    maxPagesPerRun: 40, // hard cap for a single run
+    stopOnHttp: [401, 402, 403, 429], // halt immediately on these
+    backoffMs: 4000, // brief backoff for 429 before one retry
+    maxConsecutiveErrors: 1, // trip the breaker if errors repeat
+    dryRun: false, // true → print URLs only, don’t fetch
   },
 };
