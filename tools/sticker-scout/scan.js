@@ -1,4 +1,3 @@
-
 const fs = require('fs');
 const path = require('path');
 const puppeteer = require('puppeteer');
@@ -10,6 +9,96 @@ const {
   stickerMatch,
   estimateProfit,
 } = require('./utils');
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms)); // already added earlier
+
+async function discoverApi(page, CFG) {
+  const hits = [];
+  function onResponse(res) {
+    const url = res.url();
+    if (!CFG.FAST.endpointMatch.test(url)) return;
+    if (!/json|javascript|text/i.test(res.headers()['content-type'] || '')) return;
+    hits.push(res);
+  }
+  page.on('response', onResponse);
+
+  await sleep(CFG.FAST.discoveryMs);
+
+  page.off('response', onResponse);
+
+  const last = hits[hits.length - 1];
+  if (!last) return null;
+
+  try {
+    const data = await last.json();
+    const endpoint = last.url();
+
+    return { endpoint, sample: data };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchJsonInPage(page, url) {
+  return await page.evaluate(async (u) => {
+    const r = await fetch(u, { credentials: 'include' });
+    const ct = r.headers.get('content-type') || '';
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (ct.includes('application/json')) return await r.json();
+    const text = await r.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { _raw: text };
+    }
+  }, url);
+}
+
+function buildPagedUrls(baseUrl, { pageParam, sizeParam, pageSize, maxPages }) {
+  const urls = [];
+  for (let p = 1; p <= maxPages; p++) {
+    const u = new URL(baseUrl);
+    if (!u.searchParams.has(pageParam)) u.searchParams.set(pageParam, String(p));
+    if (sizeParam) u.searchParams.set(sizeParam, String(pageSize));
+    urls.push(u.toString());
+  }
+  return urls;
+}
+
+function mapUnknownJsonToItems(json) {
+  const items = [];
+
+  const tryPush = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    const name = obj.name || obj.title || obj.itemName || obj.market_hash_name || '';
+    const price = Number(obj.price || obj.amount || obj.sell_price || obj.list_price);
+    let stickers = [];
+
+    const candArrays = [
+      obj.stickers,
+      obj.Stickers,
+      obj.assets?.stickers,
+      obj.meta?.stickers,
+      obj.details?.stickers,
+    ].filter(Boolean);
+    if (candArrays.length) {
+      stickers = (candArrays[0] || []).map((s) => s.name || s.text || s.title).filter(Boolean);
+    }
+
+    if (name) items.push({ name, priceText: String(price || ''), stickers });
+  };
+
+  // Walk arrays at top-level
+  if (Array.isArray(json)) json.forEach(tryPush);
+  if (json && typeof json === 'object') {
+    for (const k of Object.keys(json)) {
+      const v = json[k];
+      if (Array.isArray(v)) v.forEach(tryPush);
+    }
+  }
+
+  return items;
+}
 
 async function pickMarketPage(browser, urlHint, SELECTORS) {
   const pages = await browser.pages();
@@ -162,6 +251,66 @@ async function main() {
         }
       }
     };
+
+    let fastDone = false;
+    if (CFG.FAST.enabled) {
+      const found = await discoverApi(page, CFG);
+      if (found?.endpoint) {
+        if (CFG.FAST.saveSample) {
+          const outDir = path.resolve(process.cwd(), CFG.OUTPUT.dir);
+          if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+          const samplePath = path.join(outDir, 'api-sample.json');
+          fs.writeFileSync(samplePath, JSON.stringify(found.sample, null, 2), 'utf8');
+          console.log('  Saved API sample →', samplePath);
+        }
+
+        const urls = buildPagedUrls(found.endpoint, CFG.FAST);
+        const seenSigs = new Set();
+
+        for (const url of urls) {
+          let json;
+          try {
+            json = await fetchJsonInPage(page, url);
+          } catch {
+            break;
+          }
+
+          const batch = mapUnknownJsonToItems(json);
+          if (!batch.length) break;
+
+          for (const it of batch) {
+            const sig = `${it.name}::${it.priceText}::${(it.stickers || []).join('|')}`;
+            if (seenSigs.has(sig)) continue;
+            seenSigs.add(sig);
+
+            const item = {
+              name: it.name,
+              priceText: it.priceText,
+              stickers: it.stickers,
+              _sig: sig,
+            };
+            emit(item);
+          }
+        }
+
+        fastDone = true;
+      }
+    }
+
+    if (!fastDone) {
+      (await extractVisible(page, SELECTORS)).forEach(emit);
+
+      const container = await getScrollContainer(page, SELECTORS);
+      await autoScrollAndStream(
+        page,
+        container,
+        async (batch) => {
+          batch.forEach(emit);
+        },
+        SCROLL,
+        SELECTORS
+      );
+    }
 
     // First screen:
     (await extractVisible(page, SELECTORS)).forEach(emit);
