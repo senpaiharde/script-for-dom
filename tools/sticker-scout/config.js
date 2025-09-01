@@ -10,7 +10,7 @@ module.exports = {
     minPrice: 2, // number | null
     maxPrice: 65, // number | null
     stickerMode: 'any', // 'any' | 'all' | 'regex'
-    stickerTerms: ['Holo', 'stockholm'], // used for 'any' or 'all'
+    stickerTerms: [], // used for 'any' or 'all'
     stickerRegex: null, // e.g. '(Holo|Foil)' (case-insensitive)
     minStickerCount: 1,
   },
@@ -25,7 +25,6 @@ module.exports = {
     hardcodeCut: 0.1, // -10%
   },
 
-  
   SCROLL: {
     maxBatches: 40,
     perBatchPx: 1100,
@@ -40,18 +39,19 @@ module.exports = {
     saveJSON: true,
     saveCSV: true,
     sortBy: 'roi', // 'roi' | 'price' | 'none'
+    debugFirstN: 10,
   },
   FAST: {
-   enabled: true,                 // set false to disable
-    discoveryMs: 4000,             //FETCH TIMER 4 sec
+    enabled: true, // set false to disable
+    discoveryMs: 4000, //FETCH TIMER 4 sec
     endpointMatch: /(inventory|items|market|trade|list|search)/i,
-    pageParam: 'page',             // look forword to this param in URLs
-    sizeParam: 'size',             // getting size
+    pageParam: 'page', // look forword to this param in URLs
+    sizeParam: 'size', // getting size
     pageSize: 60,
     maxPages: 40,
-    saveSample: true,              //taking saved data
+    saveSample: true, //taking saved data
   },
- 
+
   BROWSER: {
     headless: true,
     connectWSEndpoint: null, // e.g. 'ws://127.0.0.1:9222/devtools/browser/<id>'
@@ -59,13 +59,29 @@ module.exports = {
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   },
 
-
   SELECTORS: {
     card: '.item-card',
     gunImg: '.item-card__image, .item-image.item-card__image, .item-thumb img',
     name: '.item-card__title, .itemName',
-    stickerImgs: '.item-card__stickers img[alt], .item-card-stickers img[alt]',
+    stickerImgs: '.item-card__stickers img, .item-card-stickers img, [class*="sticker"] img',
     price: '.item-card__price.item-price, .item-price.item-card__price',
     scrollContainer: '.inventory-grid-row, .vue-recycle-scroller__item-view',
+  },
+  // FAST_FETCH: direct API scanner  
+  FAST_FETCH: {
+    enabled: true,
+    endpoint: 'https://skinsmonkey.com/api/inventory',
+    appId: 730,
+    sort: 'price-desc', // or 'price-asc'
+    limit: 120, // as observed
+    maxPages: 360, // safety cap
+    useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
+    priceFactor: 100, // API uses cents: 5900 => $59.00
+    headers: {
+     
+      'user-agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
+      accept: 'application/json,text/plain,*/*',
+    },
   },
 };

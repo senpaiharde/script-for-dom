@@ -144,7 +144,8 @@ async function extractVisible(page, SELECTORS) {
       const img = card.querySelector(SELECTORS.gunImg);
       const nameEl = card.querySelector(SELECTORS.name);
       const priceEl = card.querySelector(SELECTORS.price);
-      const stickerImgs = Array.from(card.querySelectorAll(SELECTORS.stickerImgs));
+      const stickerNodes = Array.from(card.querySelectorAll(SELECTORS.stickerImgs));
+      const stickersRaw = [];
 
       const name =
         (img && (img.getAttribute('alt') || '').trim()) ||
@@ -152,27 +153,50 @@ async function extractVisible(page, SELECTORS) {
         '';
 
       const priceText = priceEl && priceEl.textContent ? priceEl.textContent.trim() : '';
+      for (const n of stickerNodes) {
+        const t = (
+          n.getAttribute('alt') ||
+          n.getAttribute('title') ||
+          n.getAttribute('aria-label') ||
+          ''
+        ).trim();
+        if (t) stickersRaw.push(t);
+      }
 
-      const stickers = stickerImgs
-        .map((im) => (im.getAttribute('alt') || '').trim())
-        .filter(Boolean);
+      if (stickersRaw.length === 0) {
+        const tipNodes = Array.from(
+          card.querySelectorAll('[data-tippy-content], [data-tooltip], [title], [aria-label]')
+        );
+        for (const n of tipNodes) {
+          const t = (
+            n.getAttribute('data-tippy-content') ||
+            n.getAttribute('data-tooltip') ||
+            n.getAttribute('title') ||
+            n.getAttribute('aria-label') ||
+            ''
+          ).trim();
+          if (t) stickersRaw.push(t);
+        }
+      }
 
-      const sig = name + '::' + priceText + '::' + stickers.join('|');
-      return { name, priceText, stickers, _sig: sig };
+      const stickers = Array.from(
+        new Set(stickersRaw.filter((s) => s && s !== (img?.getAttribute('alt') || '').trim()))
+      );
     });
   }, SELECTORS);
 }
 
-async function autoScrollAndStream(page, containerHandle, onBatch, SCROLL, getSeenSize) {
+async function autoScrollAndStream(page, containerHandle, onBatch, SCROLL, SELECTORS, getSeenSize) {
   let lastSeenSize = getSeenSize ? getSeenSize() : 0;
   let noNew = 0;
 
   for (let i = 0; i < SCROLL.maxBatches; i++) {
     await page.evaluate(
       (container, dy) => {
-        (container || window).scrollBy
-          ? (container || window).scrollBy(0, dy)
-          : (container.scrollTop = (container.scrollTop || 0) + dy);
+        const el = container || document.scrollingElement || document.body;
+        if (el && typeof el.scrollBy === 'function') el.scrollBy(0, dy);
+        else if (el) el.scrollTop = (el.scrollTop || 0) + dy;
+        else window.scrollBy(0, dy);
       },
       containerHandle,
       SCROLL.perBatchPx
@@ -180,28 +204,24 @@ async function autoScrollAndStream(page, containerHandle, onBatch, SCROLL, getSe
 
     await sleep(SCROLL.waitBetweenMs);
 
-    const batch = await extractVisible(page, CFG.SELECTORS);
+    const batch = await extractVisible(page, SELECTORS);
     await onBatch(batch);
 
-    const currentCount = batch.length;
-    if (currentCount <= lastSeenCount) noNew++;
-    else {
-      noNew = 0;
-      lastSeenCount = currentCount;
-    }
     const currentSize = getSeenSize ? getSeenSize() : lastSeenSize;
     if (currentSize <= lastSeenSize) noNew++;
     else {
       noNew = 0;
       lastSeenSize = currentSize;
     }
+
     if (noNew >= SCROLL.earlyStopIfNoNew) break;
   }
 }
 
 async function main() {
+  
   const { TARGET, FILTERS, PROFIT, SCROLL, OUTPUT, BROWSER, SELECTORS } = CFG;
-
+  if (!SELECTORS?.card) throw new Error('SELECTORS missing; check config.js');
   const browser = BROWSER.connectWSEndpoint
     ? await puppeteer.connect({ browserWSEndpoint: BROWSER.connectWSEndpoint })
     : await puppeteer.launch({
@@ -298,6 +318,15 @@ async function main() {
 
           for (const it of batch) {
             const sig = `${it.name}::${it.priceText}::${(it.stickers || []).join('|')}`;
+            try {
+              const n = (window.__STICKER_DEBUG_COUNT__ =
+                (window.__STICKER_DEBUG_COUNT__ || 0) + 1);
+              if (n <= (window.__DEBUG_FIRST_N__ ?? 0)) {
+                console.log(
+                  JSON.stringify({ type: 'DEBUG_CARD', data: { name, priceText, stickers } })
+                );
+              }
+            } catch {}
             if (seenSigs.has(sig)) continue;
             seenSigs.add(sig);
 
@@ -322,10 +351,9 @@ async function main() {
       await autoScrollAndStream(
         page,
         container,
-        async (batch) => {
-          batch.forEach(emit);
-        },
+        (batch) => batch.forEach(emit),
         SCROLL,
+        SELECTORS,
         () => seen.size
       );
     }
