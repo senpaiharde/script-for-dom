@@ -8,11 +8,11 @@ module.exports = {
   // Filters you want by default (no CLI – just edit here)
   FILTERS: {
     minPrice: 0.5, // number | null
-    maxPrice: 59, // number | null
+    maxPrice: 49, // number | null
     stickerMode: 'any', // 'any' | 'all' | 'regex'
     stickerTerms: [], // used for 'any' or 'all'
     stickerRegex: null, // e.g. '(Holo|Foil)' (case-insensitive)
-    minStickerCount: 1,
+    minStickerCount: 0,
   },
 
   // Profit model – tune or disable

@@ -108,8 +108,6 @@ function extractItemsArray(json) {
 function mapItem(o) {
   if (!o || typeof o !== 'object') return null;
   const pf = CFG.FETCH?.priceFactor ?? 100;
-  const toUnits = (cents) =>
-    typeof cents === 'number' && Number.isFinite(cents) ? Math.round(cents) / pf : null;
 
   // Name – many variants
   const name =
@@ -125,6 +123,7 @@ function mapItem(o) {
 
   // Parse stickers from a variety of places and shapes
   const stickerArrays = [
+    o?.game730?.stickers,
     o.stickers,
     o.appliedStickers,
     o.applied_stickers,
@@ -149,23 +148,10 @@ function mapItem(o) {
       }
       const sName = s.marketName || s.name || s.title || s.text || s.stickerName || s.label || null;
       const sType = s.type || s.kind || s.rarity || null;
-      // Price fields: prefer cents if present
-      const cents =
-        (typeof s.price_cents === 'number' && s.price_cents) ??
-        (typeof s.priceCents === 'number' && s.priceCents) ??
-        // sometimes nested object like { price: { cents: N } }
-        (typeof s.price?.cents === 'number' && s.price.cents) ??
-        // fallbacks where API gives "price" already in cents vs dollars
-        (typeof s.price === 'number' && s.price > 100 ? s.price : null) ??
-        null;
-      const sPrice =
-        cents != null
-          ? toUnits(cents)
-          : typeof s.price === 'number'
-          ? s.price
-          : typeof s.value === 'number'
-          ? s.value
-          : null;
+      const raw = s.price_cents ?? s.priceCents ?? s.price?.cents ?? s.price ?? s.value ?? null;
+      let num = raw != null ? Number(raw) : null;
+      if (!Number.isFinite(num)) num = null;
+      const sPrice = num == null ? null : num > 100 ? Math.round(num) / pf : num;
       if (sName) stickers.push({ name: sName, type: sType, price: sPrice });
     }
   }
@@ -269,19 +255,18 @@ async function main() {
   const DEDUPE = false;
   const hits = [];
   let consecutiveErrors = 0;
-
   const emit = (it) => {
-    const key = it._key || `${it.name}::${it.price}::${(it.stickers || []).join('|')}`;
+    const key = it._key || `${it.name}::${it.stickers?.length || 0}`;
     if (DEDUPE) {
       if (seen.has(key)) return;
       seen.add(key);
     }
-    const hit = {
+    const item = {
       name: normalizeSpaces(it.name),
       stickers: Array.isArray(it.stickers) ? it.stickers : [],
     };
-    hits.push(hit);
-    if (OUTPUT.streamHits) console.log(JSON.stringify({ type: 'ITEM', data: hit }));
+    hits.push(item);
+    if (OUTPUT.streamHits) console.log(JSON.stringify({ type: 'ITEM', data: item }));
   };
 
   const maxPages = Math.min(FETCH.maxPages, POLITENESS.maxPagesPerRun);
@@ -346,11 +331,37 @@ async function main() {
           (typeof obj?.item?.price === 'number' && Math.round(obj.item.price * f));
         return cents != null ? cents / f : null;
       };
-      const toStickerNames = (cand) => {
-        const arr = Array.isArray(cand) ? cand : [];
-        return arr
-          .map((s) => (s && (s.marketName || s.name || s.title || s.text || s.stickerName)) || '')
-          .filter(Boolean);
+      const pf = FETCH.priceFactor || 100;
+      const toStickerObjs = (asset) => {
+        const cands = [
+          asset?.game730?.stickers, // <— your sample shows stickers here
+          asset?.stickers,
+          asset?.item?.stickers,
+          asset?.item?.appliedStickers,
+          asset?.item?.applied_stickers,
+          asset?.details?.stickers,
+          asset?.meta?.stickers,
+        ];
+        const out = [];
+        for (const arr of cands) {
+          if (!Array.isArray(arr)) continue;
+          for (const s of arr) {
+            if (!s) continue;
+            if (typeof s === 'string') {
+              out.push({ name: s.trim(), type: null, price: null });
+              continue;
+            }
+            const name = s.marketName || s.name || s.title || s.text || s.stickerName || s.label;
+            const type = s.type || s.kind || s.rarity || null;
+            const raw =
+              s.price_cents ?? s.priceCents ?? s.price?.cents ?? s.price ?? s.value ?? null;
+            let num = raw != null ? Number(raw) : null;
+            if (!Number.isFinite(num)) num = null;
+            const price = num == null ? null : num > 100 ? Math.round(num) / pf : num; // >100 → cents
+            if (name) out.push({ name, type, price });
+          }
+        }
+        return out;
       };
       const toName = (obj) =>
         obj?.item?.marketName ||
@@ -364,17 +375,10 @@ async function main() {
 
       const emitAsset = (asset, idx) => {
         const name = toName(asset);
-        const price = toPrice(asset) ?? toPrice(asset.item || {}) ?? null;
-        const stickers =
-          toStickerNames(asset.stickers) ||
-          toStickerNames(asset.item?.stickers) ||
-          toStickerNames(asset.item?.appliedStickers) ||
-          toStickerNames(asset.item?.applied_stickers) ||
-          toStickerNames(asset.details?.stickers);
-        const row = { name, price, stickers };
+        const stickers = toStickerObjs(asset);
+        const row = { name, stickers };
         if (row.name) emit({ ...row, _key: `${offset}:${idx}:${name}` });
       };
-
       for (let i = 0; i < arr.length; i++) {
         const asset = arr[i];
         // Some responses are "containers" that hold listings in `items`
@@ -404,25 +408,51 @@ async function main() {
     if (arr.length < FETCH.limit) break;
   }
 
-  hits.sort((a, b) => (b.profit?.roi ?? -Infinity) - (a.profit?.roi ?? -Infinity));
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const jsonPath = path.join(outDir, `skinsmonkey-fetch-${ts}.json`);
   const csvPath = path.join(outDir, `skinsmonkey-fetch-${ts}.csv`);
   fs.writeFileSync(jsonPath, JSON.stringify(hits, null, 2), 'utf8');
-  fs.writeFileSync(
-    csvPath,
+  const rows = [];
+  rows.push(
     [
-      'name,price,stickers,roi,absProfit',
-      ...hits.map(
-        (x) =>
-          `"${x.name.replace(/"/g, '""')}",${x.price ?? ''},"${(x.stickers || [])
-            .join(' | ')
-            .replace(/"/g, '""')}",${x.profit?.roi ?? ''},${x.profit?.absolute ?? ''}`
-      ),
-    ].join('\n'),
-    'utf8'
+      'name',
+      's1_name',
+      's1_type',
+      's1_price',
+      's2_name',
+      's2_type',
+      's2_price',
+      's3_name',
+      's3_type',
+      's3_price',
+      's4_name',
+      's4_type',
+      's4_price',
+      'stickers_json',
+    ].join(',')
   );
-
+  for (const it of hits) {
+    const s = Array.isArray(it.stickers) ? it.stickers.slice(0, 4) : [];
+    const cells = [it.name.replace(/"/g, '""')];
+    for (let i = 0; i < 4; i++) {
+      const si = s[i] || {};
+      cells.push(
+        (si.name ?? '').replace(/"/g, '""'),
+        (si.type ?? '').toString().replace(/"/g, '""'),
+        si.price ?? ''
+      );
+    }
+    const raw = JSON.stringify(it.stickers || []).replace(/"/g, '""');
+    rows.push(
+      `"${cells[0]}",` +
+        cells
+          .slice(1)
+          .map((c, idx) => (idx % 3 === 2 ? `${c}` : `"${c}"`))
+          .join(',') +
+        `,"${raw}"`
+    );
+  }
+  fs.writeFileSync(csvPath, rows.join('\n'), 'utf8');
   log(`Done. Hits: ${hits.length}`);
   log('Saved:', jsonPath);
   log('Saved:', csvPath);
