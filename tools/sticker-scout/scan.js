@@ -12,19 +12,6 @@ const {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms)); // already added earlier
 
-
-
-
-FAST: {
-    enabled: true,                 // set false to disable
-    discoveryMs: 4000,             // sniff XHR/fetch for ~4s
-    endpointMatch: /(inventory|items|market|trade|list|search)/i,
-    pageParam: 'page',             // naive paginator guess
-    sizeParam: 'size',             // request more per page if supported
-    pageSize: 60,
-    maxPages: 40,
-    saveSample: true,              // dump first JSON to out/api-sample.json
-  },
 async function discoverApi(page, CFG) {
   const hits = [];
   function onResponse(res) {
@@ -176,8 +163,8 @@ async function extractVisible(page, SELECTORS) {
   }, SELECTORS);
 }
 
-async function autoScrollAndStream(page, containerHandle, onBatch, SCROLL) {
-  let lastSeenCount = 0;
+async function autoScrollAndStream(page, containerHandle, onBatch, SCROLL, getSeenSize) {
+  let lastSeenSize = getSeenSize ? getSeenSize() : 0;
   let noNew = 0;
 
   for (let i = 0; i < SCROLL.maxBatches; i++) {
@@ -191,7 +178,7 @@ async function autoScrollAndStream(page, containerHandle, onBatch, SCROLL) {
       SCROLL.perBatchPx
     );
 
-    await page.waitForTimeout(SCROLL.waitBetweenMs);
+    await sleep(SCROLL.waitBetweenMs);
 
     const batch = await extractVisible(page, CFG.SELECTORS);
     await onBatch(batch);
@@ -202,7 +189,12 @@ async function autoScrollAndStream(page, containerHandle, onBatch, SCROLL) {
       noNew = 0;
       lastSeenCount = currentCount;
     }
-
+    const currentSize = getSeenSize ? getSeenSize() : lastSeenSize;
+    if (currentSize <= lastSeenSize) noNew++;
+    else {
+      noNew = 0;
+      lastSeenSize = currentSize;
+    }
     if (noNew >= SCROLL.earlyStopIfNoNew) break;
   }
 }
@@ -221,6 +213,19 @@ async function main() {
   try {
     const page = await pickMarketPage(browser, TARGET.urlHint, SELECTORS);
     await page.waitForSelector(SELECTORS.card, { timeout: 15000 }).catch(() => {});
+    // for next automatic fresh tabs runner
+    if (CFG.TARGET?.navigateIfEmpty) {
+      try {
+        const count = await page.evaluate(
+          (sel) => document.querySelectorAll(sel).length,
+          SELECTORS.card
+        );
+        if (!count || count < 1) {
+          await page.goto(CFG.TARGET.startUrl, { waitUntil: ['domcontentloaded', 'networkidle2'] });
+          await page.waitForSelector(SELECTORS.card, { timeout: 15000 }).catch(() => {});
+        }
+      } catch {}
+    }
 
     // compile regex once (if any)
     const stickerRegex =
@@ -266,7 +271,7 @@ async function main() {
     };
 
     let fastDone = false;
-    if (CFG.FAST.enabled) {
+    if (CFG.FAST && CFG.FAST.enabled) {
       const found = await discoverApi(page, CFG);
       if (found?.endpoint) {
         if (CFG.FAST.saveSample) {
@@ -321,23 +326,9 @@ async function main() {
           batch.forEach(emit);
         },
         SCROLL,
-        SELECTORS
+        () => seen.size
       );
     }
-
-    // First screen:
-    (await extractVisible(page, SELECTORS)).forEach(emit);
-
-    // Scroll and stream:
-    const container = await getScrollContainer(page, SELECTORS);
-    await autoScrollAndStream(
-      page,
-      container,
-      async (batch) => {
-        batch.forEach(emit);
-      },
-      SCROLL
-    );
 
     // Sort + save
     if (OUTPUT.sortBy === 'roi') {
