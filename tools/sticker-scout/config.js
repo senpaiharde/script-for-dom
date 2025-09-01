@@ -73,10 +73,11 @@ module.exports = {
     endpoint: 'https://skinsmonkey.com/api/inventory',
     appId: 730,
     sort: 'price-desc', // or 'price-asc'
-    limit: 120, // as observed
-    maxPages: 360, // safety cap
+    limit: 60, // as observed
+    maxPages: 180, // safety cap
     useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
     priceFactor: 100, // API uses cents: 5900 => $59.00
+     tradeLock: 8,
     headers: {
      
       'user-agent':
