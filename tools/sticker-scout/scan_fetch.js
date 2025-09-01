@@ -232,14 +232,16 @@ async function main() {
 
   const pace = new Pace(POLITENESS);
   const seen = new Set();
+  const DEDUPE = CFG.OUTPUT?.dedupe === true; // default: no dedupe (show all)
   const hits = [];
   let consecutiveErrors = 0;
 
   const emit = (it) => {
-    const key = `${it.name}::${it.price}::${(it.stickers || []).join('|')}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-
+    const key = it._key || `${it.name}::${it.price}::${(it.stickers || []).join('|')}`;
+    if (DEDUPE) {
+      if (seen.has(key)) return;
+      seen.add(key);
+    }
     //const okP = priceMatch(it.price, FILTERS.minPrice, FILTERS.maxPrice);
     //const okS = stickerMatch(it.stickers,
     // {
@@ -268,84 +270,116 @@ async function main() {
 
   const maxPages = Math.min(FETCH.maxPages, POLITENESS.maxPagesPerRun);
   for (let p = 0; p < maxPages; p++) {
-    const offset = (FETCH.startOffset || 0) + p * FETCH.limit;
+    const offset = FETCH.startOffset + p * FETCH.limit;
     const url = buildUrl({
-      baseUrl: FETCH.baseUrl || FETCH.endpoint,
+      baseUrl: FETCH.baseUrl,
       appId: FETCH.appId,
       sort: FETCH.sort,
       limit: FETCH.limit,
       offset,
-      minCents,
-      maxCents,
+      minCents:
+        FILTERS.minPrice != null
+          ? Math.round(FILTERS.minPrice * (FETCH.priceFactor || 100))
+          : minCents,
+      maxCents:
+        FILTERS.maxPrice != null
+          ? Math.round(FILTERS.maxPrice * (FETCH.priceFactor || 100))
+          : maxCents,
       tradeLock: FETCH.tradeLock,
     });
-
-    if (POLITENESS.dryRun) {
-      log('DRY RUN URL:', url);
-      continue;
-    }
-
-    await pace.wait();
 
     let json;
     try {
       json = await getJSON(url);
       consecutiveErrors = 0;
     } catch (e) {
-      log('fetch error:', e._status || e.name || '', (e.message || '').slice(0, 120));
-      if (e._body) log('body sample:', String(e._body).slice(0, 160));
-
-      if (POLITENESS.stopOnHttp.includes(e._status)) {
-        log(`Stopping due to HTTP ${e._status}.`);
-        break;
-      }
-      if (e._status === 429 || e.name === 'AbortError') {
-        await sleep(POLITENESS.backoffMs);
+      log('fetch error:', e);
+      const status = e?._status;
+      if (shouldFallback(status)) {
+        // fallback to page-session fetch once, then continue
         try {
-          json = await getJSON(url);
-        } catch {
+          json = await pageSessionFetch(browser, url);
+        } catch (e2) {
           consecutiveErrors++;
-          if (consecutiveErrors > POLITENESS.maxConsecutiveErrors) throw e;
-          else continue;
+          if (consecutiveErrors >= POLITENESS.maxConsecutiveErrors) break;
+          continue;
         }
       } else {
         consecutiveErrors++;
-        if (consecutiveErrors > POLITENESS.maxConsecutiveErrors) throw e;
-        else continue;
+        if (consecutiveErrors >= POLITENESS.maxConsecutiveErrors) break;
+        continue;
       }
     }
 
-    const arr = extractItemsArray(json);
-    log(`page ${p + 1}: got ${arr.length} containers (offset=${offset})`);
-    if (!arr.length) break;
+    // ---------- SkinsMonkey shape FIRST (assets -> one row per weapon) ----------
+    if (json && Array.isArray(json.assets)) {
+      const arr = json.assets;
+      log(`page ${p + 1}: got ${arr.length} containers (offset=${offset})`);
 
-    if (Array.isArray(json.assets)) {
-      for (const asset of json.assets) {
-        const name =
-          asset?.item?.marketName ||
-          asset?.item?.name ||
-          asset?.item?.market_hash_name ||
-          'Unknown Item';
-
-        const stickers = Array.isArray(asset.stickers) ? asset.stickers : [];
-        const stickerNames = stickers
-          .filter((s) => s && s.type === 'STICKER')
-          .map((s) => s.marketName || s.name || s.title || s.text)
+      const toPrice = (obj) => {
+        const f = FETCH.priceFactor || 100;
+        // Prefer explicit cents fields; else treat dollar-ish fields as dollars
+        const cents =
+          (typeof obj?.price_cents === 'number' && obj.price_cents) ??
+          (typeof obj?.priceCents === 'number' && obj.priceCents) ??
+          (typeof obj?.list_price === 'number' && obj.list_price) ??
+          (typeof obj?.sell_price === 'number' && obj.sell_price) ??
+          (typeof obj?.min_price === 'number' && obj.min_price) ??
+          (typeof obj?.minPrice === 'number' && Math.round(obj.minPrice * f)) ??
+          (typeof obj?.price === 'number' && obj.price > 100 ? obj.price : null) ??
+          (typeof obj?.item?.price === 'number' && Math.round(obj.item.price * f));
+        return cents != null ? cents / f : null;
+      };
+      const toStickerNames = (cand) => {
+        const arr = Array.isArray(cand) ? cand : [];
+        return arr
+          .map((s) => (s && (s.marketName || s.name || s.title || s.text || s.stickerName)) || '')
           .filter(Boolean);
+      };
+      const toName = (obj) =>
+        obj?.item?.marketName ||
+        obj?.item?.name ||
+        obj?.item?.market_hash_name ||
+        obj?.marketName ||
+        obj?.name ||
+        obj?.title ||
+        obj?.asset?.name ||
+        'Unknown Item';
 
-        // Sum sticker prices (API gives cents)
-        const cents = stickers
-          .filter((s) => s && s.type === 'STICKER' && typeof s.price === 'number')
-          .reduce((sum, s) => sum + s.price, 0);
-        const price = cents / (CFG.FETCH?.priceFactor ?? 100);
+      const emitAsset = (asset, idx) => {
+        const name = toName(asset);
+        const price = toPrice(asset) ?? toPrice(asset.item || {}) ?? null;
+        const stickers =
+          toStickerNames(asset.stickers) ||
+          toStickerNames(asset.item?.stickers) ||
+          toStickerNames(asset.item?.appliedStickers) ||
+          toStickerNames(asset.item?.applied_stickers) ||
+          toStickerNames(asset.details?.stickers);
+        const row = { name, price, stickers };
+        if (row.name) emit({ ...row, _key: `${offset}:${idx}:${name}` });
+      };
 
-        const row = { name, price, stickers: stickerNames };
-        //if (row.name && Number.isFinite(row.price)) emit(row);
-        if (row.name) emit(row);
+      for (let i = 0; i < arr.length; i++) {
+        const asset = arr[i];
+        // Some responses are "containers" that hold listings in `items`
+        if (Array.isArray(asset?.items) && asset.items.length) {
+          for (let j = 0; j < asset.items.length; j++) {
+            const item = asset.items[j];
+            emitAsset(item, `${i}.${j}`);
+          }
+        } else {
+          emitAsset(asset, i);
+        }
       }
+      // pagination end condition for this page
       if (arr.length < FETCH.limit) break;
-      continue;
+      continue; // <---- CRITICAL: skip the generic mapping below
     }
+
+    // ---------- Generic shapes (fallback) ----------
+    const arr = extractItemsArray(json); // items, data.items, results, etc.
+    log(`page ${p + 1}: got ${arr.length} items (offset=${offset})`);
+    if (!arr.length) break;
 
     for (const raw of arr) {
       const m = mapItem(raw);

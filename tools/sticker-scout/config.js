@@ -74,7 +74,7 @@ module.exports = {
     appId: 730,
     sort: 'price-desc', // or 'price-asc'
     limit: 60, // as observed
-    maxPages: 4, // safety cap
+    maxPages: 10, // safety cap
     useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
     priceFactor: 100, // API uses cents: 5900 => $59.00
     forceBrowserSession: true, // <— NEW: always fetch via the page session
