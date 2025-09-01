@@ -17,6 +17,16 @@ const { normalizeSpaces, stickerMatch, priceMatch, estimateProfit } = require('.
 
 const log = (...a) => console.log('[sticker-scout:fetch]', ...a);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const fetchWithTimeout = async (url, ms = 15000, opts = {}) => {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, ...opts });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+};
 
 function toCents(x) {
   if (x == null) return null;
@@ -115,6 +125,7 @@ async function pageSessionFetch(browser, url) {
   if (!puppeteer || !browser) throw new Error('No browser available for session fetch');
   const pages = await browser.pages();
   const page = pages[0] || (await browser.newPage());
+  console.log('[sticker-scout:fetch] opening trade page for session…');
   await page
     .goto('https://skinsmonkey.com/trade', { waitUntil: ['domcontentloaded', 'networkidle2'] })
     .catch(() => {});
@@ -141,7 +152,19 @@ async function main() {
   const maxCents = toCents(FILTERS.maxPrice);
 
   log('starting fetch scan', { limit: FETCH.limit, maxPages: FETCH.maxPages, minCents, maxCents });
-
+  {
+    const firstUrl = buildUrl({
+      baseUrl: FETCH.baseUrl,
+      appId: FETCH.appId,
+      sort: FETCH.sort,
+      limit: FETCH.limit,
+      offset: 0,
+      minCents,
+      maxCents,
+      tradeLock: FETCH.tradeLock,
+    });
+    log('first URL:', firstUrl);
+  }
   let browser = null;
   let usedBrowserSession = false;
 
@@ -188,13 +211,15 @@ async function main() {
         offset,
         minCents,
         maxCents,
-         tradeLock: FETCH.tradeLock
+        tradeLock: FETCH.tradeLock,
       });
 
       let json;
       try {
         json = await nodeFetchJson(url);
       } catch (e) {
+        log('fetch error:', e._status || e.name || '', (e.message || '').slice(0, 120));
+        if (e._body) log('body sample:', String(e._body).slice(0, 160));
         // If blocked and configured, fall back to browser session fetch once
         if (FETCH.useBrowserSessionOnFail && e._status === 403) {
           if (!browser) {
@@ -209,7 +234,7 @@ async function main() {
                   executablePath: BROWSER?.executablePath || undefined,
                 });
             usedBrowserSession = true;
-            log('403 from API – switching to browser-session fetch');
+            log('403 from API  switching to browser-session fetch (opening page to get cookies)…');
           }
           json = await pageSessionFetch(browser, url);
         } else {

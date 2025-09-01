@@ -7,8 +7,8 @@ module.exports = {
 
   // Filters you want by default (no CLI – just edit here)
   FILTERS: {
-    minPrice: 2, // number | null
-    maxPrice: 65, // number | null
+    minPrice: 0.5, // number | null
+    maxPrice: 59, // number | null
     stickerMode: 'any', // 'any' | 'all' | 'regex'
     stickerTerms: [], // used for 'any' or 'all'
     stickerRegex: null, // e.g. '(Holo|Foil)' (case-insensitive)
@@ -67,8 +67,8 @@ module.exports = {
     price: '.item-card__price.item-price, .item-price.item-card__price',
     scrollContainer: '.inventory-grid-row, .vue-recycle-scroller__item-view',
   },
-  // FAST_FETCH: direct API scanner  
-  FAST_FETCH: {
+  // FAST_FETCH: direct API scanner
+  FETCH: {
     enabled: true,
     endpoint: 'https://skinsmonkey.com/api/inventory',
     appId: 730,
@@ -77,9 +77,8 @@ module.exports = {
     maxPages: 180, // safety cap
     useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
     priceFactor: 100, // API uses cents: 5900 => $59.00
-     tradeLock: 8,
+    tradeLock: 8,
     headers: {
-     
       'user-agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36',
       accept: 'application/json,text/plain,*/*',
