@@ -12,6 +12,19 @@ const {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms)); // already added earlier
 
+
+
+
+FAST: {
+    enabled: true,                 // set false to disable
+    discoveryMs: 4000,             // sniff XHR/fetch for ~4s
+    endpointMatch: /(inventory|items|market|trade|list|search)/i,
+    pageParam: 'page',             // naive paginator guess
+    sizeParam: 'size',             // request more per page if supported
+    pageSize: 60,
+    maxPages: 40,
+    saveSample: true,              // dump first JSON to out/api-sample.json
+  },
 async function discoverApi(page, CFG) {
   const hits = [];
   function onResponse(res) {
