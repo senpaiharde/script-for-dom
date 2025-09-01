@@ -240,17 +240,19 @@ async function main() {
     if (seen.has(key)) return;
     seen.add(key);
 
-    const okP = priceMatch(it.price, FILTERS.minPrice, FILTERS.maxPrice);
-    const okS = stickerMatch(it.stickers, {
-      mode: FILTERS.stickerMode,
-      terms: FILTERS.stickerTerms,
-      regex:
-        FILTERS.stickerMode === 'regex' && FILTERS.stickerRegex
-          ? new RegExp(FILTERS.stickerRegex, 'i')
-          : null,
-      minCount: FILTERS.minStickerCount,
-    });
-
+    //const okP = priceMatch(it.price, FILTERS.minPrice, FILTERS.maxPrice);
+    //const okS = stickerMatch(it.stickers,
+    // {
+    // mode: FILTERS.stickerMode,
+    // terms: FILTERS.stickerTerms,
+    // regex:
+    //   FILTERS.stickerMode === 'regex' && FILTERS.stickerRegex
+    //     ? new RegExp(FILTERS.stickerRegex, 'i')
+    //     : null,
+    //  minCount: FILTERS.minStickerCount,
+    // });
+    const okP = true;
+    const okS = true;
     if (okP && okS) {
       const profit = estimateProfit(it.price, PROFIT);
       const hit = {
@@ -319,22 +321,28 @@ async function main() {
 
     if (Array.isArray(json.assets)) {
       for (const asset of json.assets) {
+        const name =
+          asset?.item?.marketName ||
+          asset?.item?.name ||
+          asset?.item?.market_hash_name ||
+          'Unknown Item';
+
         const stickers = Array.isArray(asset.stickers) ? asset.stickers : [];
-        for (const s of stickers) {
-          const sName = s.marketName || s.name || s.title || s.text || 'Sticker (unknown)';
+        const stickerNames = stickers
+          .filter((s) => s && s.type === 'STICKER')
+          .map((s) => s.marketName || s.name || s.title || s.text)
+          .filter(Boolean);
 
-          const sPrice =
-            typeof s.price === 'number' ? s.price / (CFG.FETCH?.priceFactor ?? 100) : null;
-          const row = {
-            name: sName,
-            price: sPrice,
+        // Sum sticker prices (API gives cents)
+        const cents = stickers
+          .filter((s) => s && s.type === 'STICKER' && typeof s.price === 'number')
+          .reduce((sum, s) => sum + s.price, 0);
+        const price = cents / (CFG.FETCH?.priceFactor ?? 100);
 
-            stickers: [sName],
-          };
-          if (row.name && row.price != null) emit(row);
-        }
+        const row = { name, price, stickers: stickerNames };
+        //if (row.name && Number.isFinite(row.price)) emit(row);
+        if (row.name) emit(row);
       }
-
       if (arr.length < FETCH.limit) break;
       continue;
     }
