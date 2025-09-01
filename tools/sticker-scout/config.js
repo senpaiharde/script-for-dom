@@ -12,7 +12,7 @@ module.exports = {
     stickerMode: 'any', // 'any' | 'all' | 'regex'
     stickerTerms: [], // used for 'any' or 'all'
     stickerRegex: null, // e.g. '(Holo|Foil)' (case-insensitive)
-    minStickerCount: 0,
+    minStickerCount: 1,
   },
 
   // Profit model – tune or disable
@@ -74,7 +74,7 @@ module.exports = {
     appId: 730,
     sort: 'price-desc', // or 'price-asc'
     limit: 60, // as observed
-    maxPages: 10, // safety cap
+    maxPages: 20, // safety cap
     useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
     priceFactor: 100, // API uses cents: 5900 => $59.00
     forceBrowserSession: true, // <— NEW: always fetch via the page session

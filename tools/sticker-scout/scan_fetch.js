@@ -107,36 +107,70 @@ function extractItemsArray(json) {
 }
 function mapItem(o) {
   if (!o || typeof o !== 'object') return null;
-  const name =
-    o.name || o.market_hash_name || o.marketName || o.title || o.fullName || o.asset?.name || '';
-  let cents =
-    (typeof o.price_cents === 'number' && o.price_cents) ||
-    (typeof o.priceCents === 'number' && o.priceCents) ||
-    (typeof o.price === 'number' && o.price > 100 ? o.price : null) ||
-    (typeof o.list_price === 'number' && o.list_price > 100 ? o.list_price : null) ||
-    (typeof o.sell_price === 'number' && o.sell_price > 100 ? o.sell_price : null);
-  const price =
-    cents != null
-      ? cents / (CFG.FETCH?.priceFactor ?? 100)
-      : typeof o.price === 'number'
-      ? o.price
-      : null;
+  const pf = CFG.FETCH?.priceFactor ?? 100;
+  const toUnits = (cents) =>
+    typeof cents === 'number' && Number.isFinite(cents) ? Math.round(cents) / pf : null;
 
-  let stickers = [];
-  const cand =
-    o.stickers ||
-    o.appliedStickers ||
-    o.applied_stickers ||
-    o.attributes?.applied_stickers ||
-    o.asset?.stickers ||
-    o.details?.stickers ||
-    o.meta?.stickers;
-  if (Array.isArray(cand)) {
-    stickers = cand
-      .map((s) => (s && (s.marketName || s.name || s.title || s.text || s.stickerName)) || '')
-      .filter(Boolean);
+  // Name – many variants
+  const name =
+    o?.item?.marketName ||
+    o?.item?.name ||
+    o?.name ||
+    o?.market_hash_name ||
+    o?.marketName ||
+    o?.title ||
+    o?.fullName ||
+    o?.asset?.name ||
+    '';
+
+  // Parse stickers from a variety of places and shapes
+  const stickerArrays = [
+    o.stickers,
+    o.appliedStickers,
+    o.applied_stickers,
+    o.item?.stickers,
+    o.item?.appliedStickers,
+    o.item?.applied_stickers,
+    o.attributes?.applied_stickers,
+    o.asset?.stickers,
+    o.details?.stickers,
+    o.meta?.stickers,
+  ].filter(Array.isArray);
+
+  const stickers = [];
+  for (const arr of stickerArrays) {
+    for (const s of arr) {
+      if (!s || typeof s !== 'object') {
+        // Sometimes it's just a string name
+        if (typeof s === 'string' && s.trim()) {
+          stickers.push({ name: s.trim(), type: null, price: null });
+        }
+        continue;
+      }
+      const sName = s.marketName || s.name || s.title || s.text || s.stickerName || s.label || null;
+      const sType = s.type || s.kind || s.rarity || null;
+      // Price fields: prefer cents if present
+      const cents =
+        (typeof s.price_cents === 'number' && s.price_cents) ??
+        (typeof s.priceCents === 'number' && s.priceCents) ??
+        // sometimes nested object like { price: { cents: N } }
+        (typeof s.price?.cents === 'number' && s.price.cents) ??
+        // fallbacks where API gives "price" already in cents vs dollars
+        (typeof s.price === 'number' && s.price > 100 ? s.price : null) ??
+        null;
+      const sPrice =
+        cents != null
+          ? toUnits(cents)
+          : typeof s.price === 'number'
+          ? s.price
+          : typeof s.value === 'number'
+          ? s.value
+          : null;
+      if (sName) stickers.push({ name: sName, type: sType, price: sPrice });
+    }
   }
-  return { name, price, stickers };
+
+  return { name, stickers };
 }
 
 // ---------- fetch via page session (same cookies/tokens as DOM) ----------
@@ -232,7 +266,7 @@ async function main() {
 
   const pace = new Pace(POLITENESS);
   const seen = new Set();
-  const DEDUPE = CFG.OUTPUT?.dedupe === true; // default: no dedupe (show all)
+  const DEDUPE = false;
   const hits = [];
   let consecutiveErrors = 0;
 
@@ -242,30 +276,12 @@ async function main() {
       if (seen.has(key)) return;
       seen.add(key);
     }
-    //const okP = priceMatch(it.price, FILTERS.minPrice, FILTERS.maxPrice);
-    //const okS = stickerMatch(it.stickers,
-    // {
-    // mode: FILTERS.stickerMode,
-    // terms: FILTERS.stickerTerms,
-    // regex:
-    //   FILTERS.stickerMode === 'regex' && FILTERS.stickerRegex
-    //     ? new RegExp(FILTERS.stickerRegex, 'i')
-    //     : null,
-    //  minCount: FILTERS.minStickerCount,
-    // });
-    const okP = true;
-    const okS = true;
-    if (okP && okS) {
-      const profit = estimateProfit(it.price, PROFIT);
-      const hit = {
-        name: normalizeSpaces(it.name),
-        price: it.price,
-        stickers: it.stickers,
-        profit,
-      };
-      hits.push(hit);
-      if (OUTPUT.streamHits) console.log(JSON.stringify({ type: 'HIT', data: hit }));
-    }
+    const hit = {
+      name: normalizeSpaces(it.name),
+      stickers: Array.isArray(it.stickers) ? it.stickers : [],
+    };
+    hits.push(hit);
+    if (OUTPUT.streamHits) console.log(JSON.stringify({ type: 'ITEM', data: hit }));
   };
 
   const maxPages = Math.min(FETCH.maxPages, POLITENESS.maxPagesPerRun);
