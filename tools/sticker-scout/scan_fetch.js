@@ -70,8 +70,8 @@ function buildUrl({ baseUrl, appId, sort, limit, offset, minCents, maxCents, tra
   u.searchParams.set('offset', String(offset));
   if (minCents != null) u.searchParams.set('priceMin', String(minCents));
   if (maxCents != null) u.searchParams.set('priceMax', String(maxCents));
-  if (FETCH.tradeLock !== null && FETCH.tradeLock !== undefined && FETCH.tradeLock !== '') {
-    u.searchParams.set('tradeLock', String(FETCH.tradeLock));
+  if (tradeLock !== null && tradeLock !== undefined && tradeLock !== '') {
+    u.searchParams.set('tradeLock', String(tradeLock));
   } else {
     u.searchParams.delete('tradeLock');
   }
@@ -193,6 +193,8 @@ async function pageSessionFetch(browser, url) {
 
 // ---------- main ----------
 async function main() {
+  let reqDelay = Number(CFG.POLITENESS?.baseDelayMs ?? 200);
+  const stepMs = Number(CFG.POLITENESS?.stepMs ?? 200);
   const { FETCH, FILTERS, OUTPUT, PROFIT, POLITENESS, BROWSER } = CFG;
   if (!FETCH?.enabled) throw new Error('FETCH mode disabled in config');
 
@@ -294,6 +296,7 @@ async function main() {
 
   const maxPages = Math.min(FETCH.maxPages, POLITENESS.maxPagesPerRun);
   for (let p = 0; p < maxPages; p++) {
+    if (p > 0) await sleep(reqDelay), (reqDelay += stepMs);
     const offset = FETCH.startOffset + p * FETCH.limit;
     const url = buildUrl({
       baseUrl: FETCH.baseUrl,
@@ -430,9 +433,32 @@ async function main() {
     }
     if (arr.length < FETCH.limit) break;
   }
-  const maxSticker = (it) => Math.max(0, ...(it.stickers || []).map((s) => Number(s?.price) || 0));
-  if ((CFG.OUTPUT?.sortBy || 'sticker_price') === 'sticker_price') {
-    hits.sort((a, b) => maxSticker(b) - maxSticker(a));
+  function stickerTier(s) {
+    const n = (s?.name || '').toLowerCase();
+    if (/\(holo\)/i.test(n)) return 3;
+    if (/\(foil\)/i.test(n)) return 2;
+    if (/\(glitter\)/i.test(n)) return 1;
+    return 0;
+  }
+  function itemMaxTier(it) {
+    return Math.max(0, ...(it.stickers || []).map(stickerTier));
+  }
+  function itemMaxStickerPrice(it) {
+    return Math.max(0, ...(it.stickers || []).map((s) => Number(s?.price) || 0));
+  }
+  const sortMode = CFG.OUTPUT?.sortBy || 'sticker_tier_price';
+  if (sortMode === 'sticker_tier_price') {
+    hits.sort((a, b) => {
+      const tb = itemMaxTier(b),
+        ta = itemMaxTier(a);
+      if (tb !== ta) return tb - ta;
+      const pb = itemMaxStickerPrice(b),
+        pa = itemMaxStickerPrice(a);
+      if (pb !== pa) return pb - pa;
+      return a.name.localeCompare(b.name);
+    });
+  } else if (sortMode === 'sticker_price') {
+    hits.sort((a, b) => itemMaxStickerPrice(b) - itemMaxStickerPrice(a));
   }
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const jsonPath = path.join(outDir, `skinsmonkey-fetch-${ts}.json`);

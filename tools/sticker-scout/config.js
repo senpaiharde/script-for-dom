@@ -8,7 +8,7 @@ module.exports = {
   // Filters you want by default (no CLI – just edit here)
   FILTERS: {
     minPrice: 0.5, // number | null
-    maxPrice: 6, // number | null
+    maxPrice: 1, // number | null
     stickerMode: 'any', // 'any' | 'all' | 'regex'
     stickerTerms: [], // used for 'any' or 'all'
     stickerRegex: null, // e.g. '(Holo|Foil)' (case-insensitive)
@@ -38,7 +38,7 @@ module.exports = {
     streamHits: true, // print HIT lines immediately
     saveJSON: true,
     saveCSV: true,
-    sortBy: 'sticker_price', // 'sticker_count' | 'sticker_price' | 'roi' | 'absolute'
+     sortBy: 'sticker_tier_price',
     debugFirstN: 10,
   },
   FAST: {
@@ -53,7 +53,7 @@ module.exports = {
   },
 
   BROWSER: {
-    headless: true,
+    headless: false,
     connectWSEndpoint: null, // e.g. 'ws://127.0.0.1:9222/devtools/browser/<id>'
     viewport: { width: 1440, height: 900 },
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
@@ -74,7 +74,7 @@ module.exports = {
     appId: 730,
     sort: 'price-desc', // or 'price-asc'
     limit: 60, // as observed
-    maxPages: 20, // safety cap
+    maxPages: 80, // safety cap
     useServerPriceFilters: true, // adds priceMin/priceMax to query if you set min/max
     priceFactor: 100, // API uses cents: 5900 => $59.00
     forceBrowserSession: true, // <— NEW: always fetch via the page session
@@ -96,11 +96,13 @@ module.exports = {
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   },
   POLITENESS: {
+     baseDelayMs: 200, // first request gap
+   stepMs: 200,       // add this per subsequent request
     minDelayMs: 800, // base delay between requests
     maxDelayMs: 1500, // randomize between min..max
     jitterMs: 300, // extra tiny jitter
     requestsPerMinute: 20, // soft cap; tool paces itself
-    maxPagesPerRun: 40, // hard cap for a single run
+    maxPagesPerRun: 80, // hard cap for a single run
     stopOnHttp: [401, 403, 429], // halt immediately on these
     backoffMs: 4000, // brief backoff for 429 before one retry
     maxConsecutiveErrors: 1, // trip the breaker if errors repeat
